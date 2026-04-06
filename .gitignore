@@ -1,0 +1,43 @@
+# Dependency directories
+node_modules/
+jspm_packages/
+venv/
+.venv/
+env/
+
+# Build outputs
+dist/
+build/
+.cache/
+.vite/
+
+# Python artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# OS metadata
+.DS_Store
+Thumbs.db
+
+# Project specific ignores
+backend/models/*
+backend/uploads/*
+
+# Except .gitkeep files if you want to keep the directory structure
+!backend/models/.gitkeep
+!backend/uploads/.gitkeep
+
+# Environment variables
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# IDEs
+.vscode/
+.idea/
+*.swp
+*.swo

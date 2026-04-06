@@ -1,0 +1,6 @@
+import { defineConfig } from 'vite'
+
+export default defineConfig({
+  // 기본 Vite 설정
+})
+
