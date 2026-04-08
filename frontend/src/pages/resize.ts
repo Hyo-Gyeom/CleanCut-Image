@@ -122,7 +122,7 @@ export function mountResizePage(root: HTMLElement, navigate: (href: string) => v
           <div class="header-inner">
             <div class="header-title">
               <h1>리사이즈</h1>
-              <p class="subtitle">이미지를 올린 뒤, 원하는 크기로 리사이즈해서 알파를 유지한 채 다운로드할 수 있습니다. (기능 구현 예정)</p>
+              <p class="subtitle">이미지를 올린 뒤, 원하는 크기로 리사이즈해서 알파를 유지한 채 다운로드할 수 있습니다.</p>
             </div>
           </div>
         </header>

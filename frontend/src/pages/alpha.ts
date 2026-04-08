@@ -32,7 +32,7 @@ function getModelStatus(key: string): ModelStatus {
   return typeof localStorage !== 'undefined' && localStorage.getItem(key) === '1' ? 'ready' : 'idle'
 }
 
-const MAX_CANVAS = 4096
+const MAX_CANVAS = 2048
 
 export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => void) {
   const state: State = {
@@ -62,11 +62,39 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
       </div>
     `
 
-  function revokeUrl(url: string | null) {
-    if (url) URL.revokeObjectURL(url)
-  }
 
-  function render() {
+
+  let prevCanvasWidth = 0
+  let prevCanvasHeight = 0
+  let prevOrigDisplayW = 0
+  let prevOrigDisplayH = 0
+  let prevResDisplayW = 0
+  let prevResDisplayH = 0
+  let currentLoadId = 0 // 비동기 레이스 방지용 ID
+
+  // DOM Elements
+  let uploadZoneEl: HTMLElement
+  let fileInputEl: HTMLInputElement
+  let previewRowEl: HTMLElement
+  let originalImgWrapEl: HTMLElement
+  let resultWrapEl: HTMLElement
+  let actionsEl: HTMLElement
+  let downloadBtnEl: HTMLButtonElement
+  let downloadBmpBtnEl: HTMLButtonElement
+  let maskEditorHintEl: HTMLElement
+  let extractRowEl: HTMLElement
+  let extractServerBtnEl: HTMLButtonElement
+  let maskEditPanelEl: HTMLElement
+  let brushIncludeEl: HTMLElement
+  let brushExcludeEl: HTMLElement
+  let brushSizeInputEl: HTMLInputElement
+  let brushSizeValEl: HTMLElement
+  let zoomValEl: HTMLElement
+  let maskCanvasZoomWrapEl: HTMLElement
+  let canvasEl: HTMLCanvasElement
+  let errorEl: HTMLElement
+
+  function initLayout() {
     root.innerHTML = `
       ${renderHeader('alpha')}
       <div class="container">
@@ -74,7 +102,7 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
           <div class="header-inner">
             <div class="header-title">
               <h1>인물 알파 추출</h1>
-              <p class="subtitle">이미지를 올린 뒤 추출하고, 필요하면 마스크를 수정해 옷 등 영역을 포함할 수 있습니다.</p>
+              <p class="subtitle">이미지를 올린 뒤 추출하고, 필요하면 마스크를 수정해 영역을 포함할 수 있습니다.<br/><span style="font-size:0.9rem;color:#f59e0b;font-weight:700;margin-top:0.5rem;display:inline-block">※ 1인 할당량: 5장 / 일일 할당량: 100장</span></p>
             </div>
             <div class="model-status model-status-two">${modelRow}</div>
           </div>
@@ -92,47 +120,38 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
           </div>
         </div>
 
-        ${state.error ? `<p class="error">${state.error}</p>` : ''}
+        <div id="errorContainer"></div>
 
-        <div class="preview-row" id="previewRow" style="${state.originalUrl ? '' : 'display:none'}">
+        <div class="preview-row" id="previewRow" style="display:none">
           <div class="preview-card">
             <h3>원본</h3>
-            <div class="preview-img-wrap">
-              ${state.originalUrl ? `<img src="${state.originalUrl}" alt="원본" />` : ''}
-            </div>
+            <div class="preview-img-wrap" id="originalImgWrap"></div>
           </div>
           <div class="preview-card" style="display:flex;flex-direction:column;align-items:stretch">
             <h3>결과 (알파)</h3>
-            <div class="preview-img-wrap checkerboard" id="resultWrap">
-              ${state.resultUrl
-        ? `<img src="${state.resultUrl}" alt="결과" />`
-        : state.loading
-          ? '<div class="spinner"></div><p class="loading-text" id="loadingPercent">처리 중 0%</p>'
-          : '<p class="placeholder">추출 버튼을 눌러주세요</p>'
-      }
-            </div>
+            <div class="preview-img-wrap checkerboard" id="resultWrap"></div>
             <div style="display:flex;flex-direction:column;align-items:flex-start;gap:0.75rem;margin-top:1rem;width:100%">
-              <div class="actions" id="actions" style="${state.resultUrl ? '' : 'display:none'}">
-                <a id="downloadBtn" class="btn btn-primary" href="${state.resultUrl || '#'}" download="${state.file ? (state.file.name.lastIndexOf('.') >= 0 ? state.file.name.slice(0, state.file.name.lastIndexOf('.')) : state.file.name) + '_alpha.png' : 'person-alpha.png'}">PNG 다운로드</a>
+              <div class="actions" id="actions" style="display:none">
+                <button type="button" class="btn btn-primary" id="downloadBtn">PNG 다운로드</button>
                 <button type="button" class="btn btn-primary" id="downloadBmpBtn">BMP 다운로드</button>
               </div>
-              <p class="mask-editor-hint" id="maskEditorHint" style="${state.resultUrl ? 'margin:0;font-size:0.9rem;color:#a0a0b8' : 'display:none'}">
+              <p class="mask-editor-hint" id="maskEditorHint" style="display:none">
                 ※ 포맷이 PNG 또는 BMP일 경우, 알파가 있으면 그대로 유지됩니다. 아래 마스크 에디터에서 포함·제외 영역을 더 세밀하게 다듬을 수 있습니다.
               </p>
             </div>
           </div>
-          <div id="extractRow" style="${state.originalUrl ? 'grid-column:1/-1;display:flex;justify-content:center;align-items:center;width:100%;margin-top:1rem' : 'display:none'}">
-            <button type="button" class="btn btn-primary" id="extractServerBtn" ${state.loading ? 'disabled' : ''}>알파 추출</button>
+          <div id="extractRow" style="grid-column:1/-1;display:flex;justify-content:center;align-items:center;width:100%;margin-top:1rem;display:none">
+            <button type="button" class="btn btn-primary" id="extractServerBtn">알파 추출</button>
           </div>
         </div>
 
-        <div class="mask-edit-panel" id="maskEditPanel" style="${state.maskUrl ? '' : 'display:none'}">
+        <div class="mask-edit-panel" id="maskEditPanel" style="display:none">
           <h3>영역 수정 <span class="hint">초록=포함(살림), 빨강=제외(지움). 원본을 보며 포함/제외 브러시로 수정하세요.</span></h3>
           <div class="mask-toolbar">
             <div class="brush-group">
               <button type="button" class="btn btn-sm btn-outline" id="resetMaskBtn">초기화</button>
-              <button type="button" class="btn btn-sm ${state.brushMode === 'include' ? 'btn-primary' : 'btn-outline'}" id="brushInclude">포함 (살리기)</button>
-              <button type="button" class="btn btn-sm ${state.brushMode === 'exclude' ? 'btn-danger' : 'btn-outline'}" id="brushExclude">제외 (지우기)</button>
+              <button type="button" class="btn btn-sm btn-outline" id="brushInclude">포함 (살리기)</button>
+              <button type="button" class="btn btn-sm btn-outline" id="brushExclude">제외 (지우기)</button>
             </div>
             <label class="brush-size-label">
               브러시 크기: <input type="range" id="brushSize" min="1" max="80" value="${state.brushSize}" /> <span id="brushSizeVal">${state.brushSize}</span>
@@ -142,7 +161,7 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
               <button type="button" class="btn btn-sm btn-outline" id="zoomOutBtn">축소</button>
               <button type="button" class="btn btn-sm btn-outline" id="zoomResetBtn">100%</button>
               <button type="button" class="btn btn-sm btn-outline" id="zoomInBtn">확대</button>
-              <span id="zoomVal">${Math.round(state.maskZoom * 100)}%</span>
+              <span id="zoomVal">100%</span>
               <button type="button" class="btn btn-sm btn-primary" id="applyMaskBtn">수정된 마스크로 결과 적용</button>
             </div>
           </div>
@@ -158,24 +177,38 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
 
     bindHeaderNavigation(root, navigate)
 
-    const uploadZone = document.getElementById('uploadZone')!
-    const fileInput = document.getElementById('fileInput') as HTMLInputElement
-    const brushInclude = document.getElementById('brushInclude')
-    const brushExclude = document.getElementById('brushExclude')
-    const brushSizeInput = document.getElementById('brushSize') as HTMLInputElement
-    const brushSizeVal = document.getElementById('brushSizeVal')
-    const applyMaskBtn = document.getElementById('applyMaskBtn')
-    const downloadBmpBtn = document.getElementById('downloadBmpBtn')
+    // Element references
+    uploadZoneEl = document.getElementById('uploadZone')!
+    fileInputEl = document.getElementById('fileInput') as HTMLInputElement
+    previewRowEl = document.getElementById('previewRow')!
+    originalImgWrapEl = document.getElementById('originalImgWrap')!
+    resultWrapEl = document.getElementById('resultWrap')!
+    actionsEl = document.getElementById('actions')!
+    downloadBtnEl = document.getElementById('downloadBtn') as HTMLButtonElement
+    downloadBmpBtnEl = document.getElementById('downloadBmpBtn') as HTMLButtonElement
+    maskEditorHintEl = document.getElementById('maskEditorHint')!
+    extractRowEl = document.getElementById('extractRow')!
+    extractServerBtnEl = document.getElementById('extractServerBtn') as HTMLButtonElement
+    maskEditPanelEl = document.getElementById('maskEditPanel')!
+    brushIncludeEl = document.getElementById('brushInclude')!
+    brushExcludeEl = document.getElementById('brushExclude')!
+    brushSizeInputEl = document.getElementById('brushSize') as HTMLInputElement
+    brushSizeValEl = document.getElementById('brushSizeVal')!
+    zoomValEl = document.getElementById('zoomVal')!
+    maskCanvasZoomWrapEl = document.getElementById('maskCanvasZoomWrap')!
+    canvasEl = document.getElementById('maskCanvas') as HTMLCanvasElement
+    errorEl = document.getElementById('errorContainer')!
 
-    uploadZone.addEventListener('click', () => fileInput.click())
-    uploadZone.addEventListener('dragover', (e) => {
+    // Global listeners
+    uploadZoneEl.addEventListener('click', () => fileInputEl.click())
+    uploadZoneEl.addEventListener('dragover', (e) => {
       e.preventDefault()
-      uploadZone.classList.add('dragover')
+      uploadZoneEl.classList.add('dragover')
     })
-    uploadZone.addEventListener('dragleave', () => uploadZone.classList.remove('dragover'))
-    uploadZone.addEventListener('drop', (e) => {
+    uploadZoneEl.addEventListener('dragleave', () => uploadZoneEl.classList.remove('dragover'))
+    uploadZoneEl.addEventListener('drop', (e) => {
       e.preventDefault()
-      uploadZone.classList.remove('dragover')
+      uploadZoneEl.classList.remove('dragover')
       const file = e.dataTransfer?.files[0]
       if (
         file &&
@@ -184,40 +217,200 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
         setFile(file)
       }
     })
-    fileInput.addEventListener('change', () => {
-      const file = fileInput.files?.[0]
+    fileInputEl.addEventListener('change', () => {
+      const file = fileInputEl.files?.[0]
       if (file) setFile(file)
     })
 
-    document.getElementById('extractServerBtn')?.addEventListener('click', runExtractServer)
-    downloadBmpBtn?.addEventListener('click', downloadBmp)
+    extractServerBtnEl.addEventListener('click', runExtractServer)
 
-    brushInclude?.addEventListener('click', () => {
+    downloadBtnEl.addEventListener('click', () => {
+      if (!state.resultUrl) return
+      const baseName = state.file ? (state.file.name.lastIndexOf('.') >= 0 ? state.file.name.slice(0, state.file.name.lastIndexOf('.')) : state.file.name) : 'person'
+
+      const img = new Image()
+      img.crossOrigin = 'anonymous'
+      img.onload = () => {
+        const canvas = document.createElement('canvas')
+        canvas.width = img.width
+        canvas.height = img.height
+        const ctx = canvas.getContext('2d')
+        if (!ctx) return
+        ctx.drawImage(img, 0, 0)
+        canvas.toBlob(
+          (blob) => {
+            if (!blob) return
+            const url = URL.createObjectURL(blob)
+            const a = document.createElement('a')
+            a.href = url
+            a.download = `${baseName}_alpha.png`
+            document.body.appendChild(a)
+            a.click()
+            document.body.removeChild(a)
+            URL.revokeObjectURL(url)
+          },
+          'image/png'
+        )
+      }
+      img.src = state.resultUrl
+    })
+
+    downloadBmpBtnEl.addEventListener('click', downloadBmp)
+
+    brushIncludeEl.addEventListener('click', () => {
       state.brushMode = 'include'
-      brushInclude?.classList.add('btn-primary')
-      brushInclude?.classList.remove('btn-outline')
-      brushExclude?.classList.remove('btn-danger')
-      brushExclude?.classList.add('btn-outline')
+      refreshUI()
     })
-    brushExclude?.addEventListener('click', () => {
+    brushExcludeEl.addEventListener('click', () => {
       state.brushMode = 'exclude'
-      brushExclude?.classList.add('btn-danger')
-      brushExclude?.classList.remove('btn-outline')
-      brushInclude?.classList.remove('btn-primary')
-      brushInclude?.classList.add('btn-outline')
+      refreshUI()
     })
-    brushSizeInput?.addEventListener('input', () => {
-      state.brushSize = Number(brushSizeInput.value)
-      if (brushSizeVal) brushSizeVal.textContent = String(state.brushSize)
+    brushSizeInputEl.addEventListener('input', () => {
+      state.brushSize = Number(brushSizeInputEl.value)
+      brushSizeValEl.textContent = String(state.brushSize)
     })
-    document.getElementById('resetMaskBtn')?.addEventListener('click', resetMaskCanvas)
-    applyMaskBtn?.addEventListener('click', applyMask)
+    document.getElementById('resetMaskBtn')?.addEventListener('click', () => {
+      resetMaskCanvas()
+      maskImageData = null // 기존 마스크 메모리 정리
+    })
+    document.getElementById('applyMaskBtn')?.addEventListener('click', applyMask)
     document.getElementById('zoomInBtn')?.addEventListener('click', () => setMaskZoom(state.maskZoom + 0.25))
     document.getElementById('zoomOutBtn')?.addEventListener('click', () => setMaskZoom(state.maskZoom - 0.25))
     document.getElementById('zoomResetBtn')?.addEventListener('click', () => setMaskZoom(1))
 
+    refreshUI()
+  }
+
+  function showToast(msg: string, type: 'error' | 'info' = 'error') {
+    let container = document.getElementById('toast-container')
+    if (!container) {
+      container = document.createElement('div')
+      container.id = 'toast-container'
+      container.className = 'toast-container'
+      document.body.appendChild(container)
+    }
+    const toast = document.createElement('div')
+    toast.className = `toast toast-${type}`
+    toast.textContent = msg
+    container.appendChild(toast)
+
+    setTimeout(() => {
+      toast.classList.add('toast-out')
+      setTimeout(() => toast.remove(), 400)
+    }, 3000)
+  }
+
+  function refreshUI() {
+    // 1. Error
+    errorEl.style.display = 'none' // 기존 텍스트 에러 표시는 숨김
+    // 2. Preview Row visibility
+    previewRowEl.style.display = state.originalUrl ? '' : 'none'
+
+    // 3. Original Image
+    if (state.originalUrl) {
+      const img = originalImgWrapEl.querySelector('img')
+      if (!img) {
+        // 초기 로드 시 확장으로 간주하여 innerHTML + rAF
+        originalImgWrapEl.innerHTML = `<img src="${state.originalUrl}" alt="원본" />`
+        requestAnimationFrame(() => {
+          const i = originalImgWrapEl.querySelector('img')
+          if (i) {
+            prevOrigDisplayW = i.clientWidth
+            prevOrigDisplayH = i.clientHeight
+          }
+        })
+      } else {
+        const curW = img.clientWidth
+        const curH = img.clientHeight
+        if (curW > prevOrigDisplayW || curH > prevOrigDisplayH) {
+          // 확장 시 innerHTML + rAF
+          originalImgWrapEl.innerHTML = `<img src="${state.originalUrl}" alt="원본" />`
+          requestAnimationFrame(() => {
+            const i = originalImgWrapEl.querySelector('img')
+            if (i) {
+              prevOrigDisplayW = i.clientWidth
+              prevOrigDisplayH = i.clientHeight
+            }
+          })
+        } else {
+          // 축소 시 단순 조절
+          if (img.src !== state.originalUrl) img.src = state.originalUrl
+          prevOrigDisplayW = curW
+          prevOrigDisplayH = curH
+        }
+      }
+    } else {
+      originalImgWrapEl.innerHTML = ''
+      prevOrigDisplayW = 0
+      prevOrigDisplayH = 0
+    }
+
+    // 4. Result Wrap (Alpha)
+    if (state.resultUrl) {
+      const img = resultWrapEl.querySelector('img')
+      if (!img) {
+        // 초기 로드 시 innerHTML + rAF
+        resultWrapEl.innerHTML = `<img src="${state.resultUrl}" alt="결과" />`
+        requestAnimationFrame(() => {
+          const i = resultWrapEl.querySelector('img')
+          if (i) {
+            prevResDisplayW = i.clientWidth
+            prevResDisplayH = i.clientHeight
+          }
+        })
+        actionsEl.style.display = ''
+        maskEditorHintEl.style.display = 'margin:0;font-size:0.9rem;color:#a0a0b8'
+      } else {
+        const curW = img.clientWidth
+        const curH = img.clientHeight
+        if (curW > prevResDisplayW || curH > prevResDisplayH) {
+          // 확장 시 innerHTML + rAF
+          resultWrapEl.innerHTML = `<img src="${state.resultUrl}" alt="결과" />`
+          requestAnimationFrame(() => {
+            const i = resultWrapEl.querySelector('img')
+            if (i) {
+              prevResDisplayW = i.clientWidth
+              prevResDisplayH = i.clientHeight
+            }
+          })
+        } else {
+          // 축소 시 단순 조절
+          if (img.src !== state.resultUrl) img.src = state.resultUrl
+          prevResDisplayW = curW
+          prevResDisplayH = curH
+        }
+        actionsEl.style.display = ''
+        maskEditorHintEl.style.display = 'margin:0;font-size:0.9rem;color:#a0a0b8'
+      }
+    } else if (state.loading) {
+      resultWrapEl.innerHTML = '<div class="spinner"></div><p class="loading-text" id="loadingPercent">처리 중 0%</p>'
+      actionsEl.style.display = 'none'
+      maskEditorHintEl.style.display = 'none'
+      prevResDisplayW = 0
+      prevResDisplayH = 0
+    } else {
+      resultWrapEl.innerHTML = '<p class="placeholder">추출 버튼을 눌러주세요</p>'
+      actionsEl.style.display = 'none'
+      maskEditorHintEl.style.display = 'none'
+      prevResDisplayW = 0
+      prevResDisplayH = 0
+    }
+
+    // 5. Extract Row
+    extractRowEl.style.display = state.originalUrl ? 'flex' : 'none'
+    extractServerBtnEl.disabled = state.loading
+
+    // 6. Mask Edit Panel
+    maskEditPanelEl.style.display = state.maskUrl ? '' : 'none'
     if (state.maskUrl) {
-      setupMaskCanvas()
+      // Brush modes
+      brushIncludeEl.className = `btn btn-sm ${state.brushMode === 'include' ? 'btn-primary' : 'btn-outline'}`
+      brushExcludeEl.className = `btn btn-sm ${state.brushMode === 'exclude' ? 'btn-danger' : 'btn-outline'}`
+      zoomValEl.textContent = `${Math.round(state.maskZoom * 100)}%`
+
+      if (!maskCanvas) {
+        setupMaskCanvas()
+      }
     }
   }
 
@@ -245,10 +438,9 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
   }
 
   function setupMaskCanvas() {
-    const canvas = document.getElementById('maskCanvas') as HTMLCanvasElement
     const maskSrc = state.editedMaskUrl || state.maskUrl
     const origSrc = state.originalUrl
-    if (!canvas || !maskSrc || !origSrc) return
+    if (!canvasEl || !maskSrc || !origSrc) return
 
     const maskImg = new Image()
     maskImg.crossOrigin = 'anonymous'
@@ -265,64 +457,118 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
         w = Math.round(w * r)
         h = Math.round(h * r)
       }
-      canvas.width = w
-      canvas.height = h
-      const ctx = canvas.getContext('2d')
-      if (!ctx) return
-      maskCanvas = canvas
-      maskCtx = ctx
-      originalImageForMask = origImg
 
-      const maskCan = document.createElement('canvas')
-      maskCan.width = w
-      maskCan.height = h
-      const mCtx = maskCan.getContext('2d')!
-      mCtx.drawImage(maskImg, 0, 0, w, h)
-      maskImageData = mCtx.getImageData(0, 0, w, h)
-      const d = maskImageData.data
-      for (let i = 0; i < d.length; i += 4) {
-        const v = d[i]
-        d[i] = d[i + 1] = d[i + 2] = d[i + 3] = v
+
+      function setupCanvasEvents() {
+        if (!canvasEl) return
+        canvasEl.addEventListener('mousedown', onMaskDrawStart)
+        canvasEl.addEventListener('mousemove', onMaskDrawMove)
+        canvasEl.addEventListener('mouseup', onMaskDrawEnd)
+        canvasEl.addEventListener('mouseleave', onMaskDrawEnd)
+        canvasEl.addEventListener('touchstart', onMaskTouchStart, { passive: false })
+        canvasEl.addEventListener('touchmove', onMaskTouchMove, { passive: false })
+        canvasEl.addEventListener('touchend', onMaskDrawEnd)
+
+        const wrap = document.getElementById('maskCanvasWrap')
+        const cursorEl = document.getElementById('brushCursor')
+        const updateCursor = (e: MouseEvent) => {
+          if (!maskCanvas || !cursorEl || !wrap) return
+          const wrapRect = wrap.getBoundingClientRect()
+          const canvasRect = canvasEl.getBoundingClientRect()
+          const scale = canvasRect.width / maskCanvas.width
+          const radiusPx = (state.brushSize / 2) * scale
+          const cx = e.clientX - wrapRect.left + wrap.scrollLeft
+          const cy = e.clientY - wrapRect.top + wrap.scrollTop
+          cursorEl.style.width = radiusPx * 2 + 'px'
+          cursorEl.style.height = radiusPx * 2 + 'px'
+          cursorEl.style.left = cx - radiusPx + 'px'
+          cursorEl.style.top = cy - radiusPx + 'px'
+          cursorEl.style.display = 'block'
+        }
+        wrap?.addEventListener('mousemove', updateCursor)
+        wrap?.addEventListener('mouseleave', () => {
+          cursorEl?.style.setProperty('display', 'none')
+        })
       }
-      drawMaskDisplay()
 
-      const zoomWrap = document.getElementById('maskCanvasZoomWrap')
-      if (zoomWrap) {
-        zoomWrap.style.width = w * state.maskZoom + 'px'
-        zoomWrap.style.height = h * state.maskZoom + 'px'
+      const performSetup = () => {
+        const isExp = w > prevCanvasWidth || h > prevCanvasHeight
+        if (isExp) {
+          // 확장 시 innerHTML + rAF
+          maskCanvasZoomWrapEl.innerHTML = '<canvas id="maskCanvas"></canvas>'
+          requestAnimationFrame(() => {
+            canvasEl = document.getElementById('maskCanvas') as HTMLCanvasElement
+            canvasEl.width = w
+            canvasEl.height = h
+            const ctx = canvasEl.getContext('2d')
+            if (!ctx) return
+            maskCanvas = canvasEl
+            maskCtx = ctx
+            originalImageForMask = origImg
+
+            const maskCan = document.createElement('canvas')
+            maskCan.width = w
+            maskCan.height = h
+            const mCtx = maskCan.getContext('2d')!
+            mCtx.drawImage(maskImg, 0, 0, w, h)
+            maskImageData = mCtx.getImageData(0, 0, w, h)
+            const d = maskImageData.data
+            for (let i = 0; i < d.length; i += 4) {
+              const v = d[i]
+              d[i] = d[i + 1] = d[i + 2] = d[i + 3] = v
+            }
+            drawMaskDisplay()
+
+            canvasEl.style.width = '100%'
+            canvasEl.style.height = '100%'
+            canvasEl.style.display = 'block'
+
+            if (maskCanvasZoomWrapEl) {
+              maskCanvasZoomWrapEl.style.width = w * state.maskZoom + 'px'
+              maskCanvasZoomWrapEl.style.height = h * state.maskZoom + 'px'
+            }
+
+            setupCanvasEvents()
+          })
+        } else {
+          // 축소 시 단순 조절
+          canvasEl.width = w
+          canvasEl.height = h
+          const ctx = canvasEl.getContext('2d')
+          if (ctx) {
+            maskCanvas = canvasEl
+            maskCtx = ctx
+            originalImageForMask = origImg
+            const mCan = document.createElement('canvas')
+            mCan.width = w
+            mCan.height = h
+            const mCtx = mCan.getContext('2d')!
+            mCtx.drawImage(maskImg, 0, 0, w, h)
+            maskImageData = mCtx.getImageData(0, 0, w, h)
+            const d = maskImageData.data
+            for (let i = 0; i < d.length; i += 4) {
+              const v = d[i]
+              d[i] = d[i + 1] = d[i + 2] = d[i + 3] = v
+            }
+            drawMaskDisplay()
+          }
+
+          if (maskCanvasZoomWrapEl) {
+            maskCanvasZoomWrapEl.style.width = w * state.maskZoom + 'px'
+            maskCanvasZoomWrapEl.style.height = h * state.maskZoom + 'px'
+          }
+        }
+
+        prevCanvasWidth = w
+        prevCanvasHeight = h
       }
-      canvas.style.width = '100%'
-      canvas.style.height = '100%'
-      canvas.style.display = 'block'
 
-      const wrap = document.getElementById('maskCanvasWrap')
-      const cursorEl = document.getElementById('brushCursor')
-      const updateCursor = (e: MouseEvent) => {
-        if (!maskCanvas || !cursorEl || !wrap) return
-        const wrapRect = wrap.getBoundingClientRect()
-        const canvasRect = canvas.getBoundingClientRect()
-        const scale = canvasRect.width / maskCanvas.width
-        const radiusPx = (state.brushSize / 2) * scale
-        const cx = e.clientX - wrapRect.left + wrap.scrollLeft
-        const cy = e.clientY - wrapRect.top + wrap.scrollTop
-        cursorEl.style.width = radiusPx * 2 + 'px'
-        cursorEl.style.height = radiusPx * 2 + 'px'
-        cursorEl.style.left = cx - radiusPx + 'px'
-        cursorEl.style.top = cy - radiusPx + 'px'
-        cursorEl.style.display = 'block'
+      const isExpGlobal = w > prevCanvasWidth || h > prevCanvasHeight
+      if (isExpGlobal) {
+        requestAnimationFrame(performSetup)
+      } else {
+        performSetup()
       }
-      wrap?.addEventListener('mousemove', updateCursor)
-      wrap?.addEventListener('mouseleave', () => {
-        cursorEl?.style.setProperty('display', 'none')
-      })
-
-      canvas.addEventListener('mousedown', onMaskDrawStart)
-      canvas.addEventListener('mousemove', onMaskDrawMove)
-      canvas.addEventListener('mouseup', onMaskDrawEnd)
-      canvas.addEventListener('mouseleave', onMaskDrawEnd)
-      canvas.addEventListener('touchstart', onMaskTouchStart, { passive: false })
-      canvas.addEventListener('touchmove', onMaskTouchMove, { passive: false })
-      canvas.addEventListener('touchend', onMaskDrawEnd)
     }
     maskImg.onload = tryInit
     origImg.onload = tryInit
@@ -410,13 +656,11 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
 
   function setMaskZoom(zoom: number) {
     state.maskZoom = Math.max(0.25, Math.min(3, zoom))
-    const zoomWrap = document.getElementById('maskCanvasZoomWrap')
-    const valEl = document.getElementById('zoomVal')
-    if (zoomWrap && maskCanvas) {
-      zoomWrap.style.width = maskCanvas.width * state.maskZoom + 'px'
-      zoomWrap.style.height = maskCanvas.height * state.maskZoom + 'px'
+    if (maskCanvasZoomWrapEl && maskCanvas) {
+      maskCanvasZoomWrapEl.style.width = maskCanvas.width * state.maskZoom + 'px'
+      maskCanvasZoomWrapEl.style.height = maskCanvas.height * state.maskZoom + 'px'
     }
-    if (valEl) valEl.textContent = `${Math.round(state.maskZoom * 100)}%`
+    if (zoomValEl) zoomValEl.textContent = `${Math.round(state.maskZoom * 100)}%`
   }
 
   function resetMaskCanvas() {
@@ -451,14 +695,15 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
     if (!state.file) return
     if (!maskImageData || !maskCanvas || !originalImageForMask) {
       state.error = '마스크를 먼저 추출해 주세요.'
-      render()
+      showToast(state.error, 'error')
+      refreshUI()
       return
     }
 
     revokeUrl(state.resultUrl)
     state.loading = true
     state.error = null
-    render()
+    refreshUI()
 
     const w = maskCanvas.width
     const h = maskCanvas.height
@@ -485,18 +730,70 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
         if (!blob) {
           state.error = '결과 이미지를 생성하지 못했습니다.'
           state.loading = false
-          render()
+          refreshUI()
           return
         }
+        if (state.resultUrl) revokeUrl(state.resultUrl) // 이전 결과 URL 먼저 지움
         state.resultUrl = URL.createObjectURL(blob)
+        // 새로 결과 나왔으니 여기서 캔버스관련 메모리 안쓰면 정리해줌 (UI는 유지)
+        if (maskCanvas) {
+          maskCanvas.width = 0
+          maskCanvas.height = 0
+        }
+        maskImageData = null
+        originalImageForMask = null
+
         state.step = 'result'
         state.loading = false
-        render()
+        refreshUI()
       }, 'image/png')
     } catch (e) {
       state.error = e instanceof Error ? e.message : '마스크 적용 중 오류가 발생했습니다.'
+      showToast(state.error, 'error')
       state.loading = false
-      render()
+      refreshUI()
+    }
+  }
+
+  function revokeUrl(url: string | string[] | null) {
+    if (!url) return
+    if (Array.isArray(url)) {
+      url.forEach((u) => {
+        if (u) URL.revokeObjectURL(u)
+      })
+      return
+    }
+    URL.revokeObjectURL(url)
+  }
+
+  function cleanupResources(preserveOriginal: boolean = false) {
+    if (!preserveOriginal) {
+      revokeUrl(state.originalUrl)
+      state.originalUrl = null
+    }
+    const urlsToRevoke: string[] = []
+    if (state.maskUrl) {
+      urlsToRevoke.push(state.maskUrl)
+      state.maskUrl = null
+    }
+    if (state.editedMaskUrl) {
+      urlsToRevoke.push(state.editedMaskUrl)
+      state.editedMaskUrl = null
+    }
+    if (state.resultUrl) {
+      urlsToRevoke.push(state.resultUrl)
+      state.resultUrl = null
+    }
+
+    revokeUrl(urlsToRevoke)
+
+    if (maskCanvas) {
+      maskCanvas.width = 0
+      maskCanvas.height = 0
+      maskCtx = null
+      maskImageData = null
+      originalImageForMask = null
+      maskCanvas = null
     }
   }
 
@@ -505,33 +802,67 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
   }
 
   function setFile(file: File) {
+    const oldOriginal = state.originalUrl
+    cleanupResources(true) // 즉시 기존 화면 비움 (사용자 지시 사항)
+
     if (isAvif(file)) {
-      revokeUrl(state.originalUrl)
-      revokeUrl(state.maskUrl)
-      revokeUrl(state.editedMaskUrl)
-      revokeUrl(state.resultUrl)
+      if (oldOriginal) revokeUrl(oldOriginal)
       state.file = null
       state.originalUrl = null
+      state.error = 'AVIF는 지원하지 않습니다. JPG, PNG, WEBP 등 다른 형식을 사용해 주세요.'
+      state.step = 'upload'
+      showToast(state.error, 'error')
+      refreshUI()
+      return
+    }
+
+    const loadId = ++currentLoadId
+    const img = new Image()
+    const url = URL.createObjectURL(file)
+    img.onload = () => {
+      if (loadId !== currentLoadId) {
+        URL.revokeObjectURL(url)
+        return
+      }
+
+      if (img.width > MAX_CANVAS || img.height > MAX_CANVAS) {
+        URL.revokeObjectURL(url)
+        if (oldOriginal) state.originalUrl = oldOriginal // 원본 복구 시도 (또는 null 유지)
+        state.file = null
+        state.originalUrl = null
+        state.error = `${MAX_CANVAS}px 이하의 이미지만 지원합니다.`
+        state.step = 'upload'
+        state.loading = false
+        showToast(state.error, 'error')
+        refreshUI()
+        return
+      }
+
+      state.file = file
+      state.originalUrl = url
       state.maskUrl = null
       state.editedMaskUrl = null
       state.resultUrl = null
-      state.error = 'AVIF는 지원하지 않습니다. JPG, PNG, WEBP 등 다른 형식을 사용해 주세요.'
+      state.error = null
       state.step = 'upload'
-      render()
-      return
+      state.loading = false
+
+      if (oldOriginal) revokeUrl(oldOriginal)
+      refreshUI()
     }
-    revokeUrl(state.originalUrl)
-    revokeUrl(state.maskUrl)
-    revokeUrl(state.editedMaskUrl)
-    revokeUrl(state.resultUrl)
-    state.file = file
-    state.originalUrl = URL.createObjectURL(file)
-    state.maskUrl = null
-    state.editedMaskUrl = null
-    state.resultUrl = null
-    state.error = null
-    state.step = 'upload'
-    render()
+    img.onerror = () => {
+      if (loadId !== currentLoadId) {
+        URL.revokeObjectURL(url)
+        return
+      }
+      URL.revokeObjectURL(url)
+      state.file = null
+      state.originalUrl = null
+      state.loading = false
+      showToast('이미지를 불러오는데 실패했습니다.', 'error')
+      refreshUI()
+    }
+    img.src = url
   }
 
   function createMaskBlobFromAlphaPng(pngBlob: Blob): Promise<Blob> {
@@ -604,9 +935,8 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
     if (!state.file) return
     state.loading = true
     state.error = null
-    render()
-    const oldResultUrl = state.resultUrl
-    const oldMaskUrl = state.maskUrl
+    refreshUI()
+
     try {
       const form = new FormData()
       form.append('file', state.file)
@@ -617,31 +947,40 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
       if (!res.ok) {
         if (res.status === 429) {
           const j = await res.json().catch(() => ({}))
-          state.error =
-            (j as { detail?: string }).detail || '요청을 처리할 수 없습니다.'
+          const detail = (j as { detail?: string }).detail || ''
+
+          if (detail.includes('금일 할당량')) {
+            state.error = '일일 할당량 100장을 초과하였습니다'
+          } else {
+            // 그 외의 429는 무조건 1인 할당량 초과로 간주 (백엔드 로직 기준)
+            state.error = '1인 5장 할당량을 초과하였습니다'
+          }
+
+          showToast(state.error, 'error')
+          refreshUI()
           return
         }
         const text = await res.text()
-        throw new Error(text || `서버 오류 ${res.status}`)
+        throw new Error(text || res.statusText || '오류가 발생했습니다.')
       }
       const blob = await res.blob()
-      revokeUrl(oldResultUrl)
-      revokeUrl(oldMaskUrl)
-      revokeUrl(state.editedMaskUrl)
+
+      // 서버에서 새 결과가 도착했으므로 이전 결과와 캔버스는 비움 (원본 이미지는 화면에 둬야 하므로 유지)
+      cleanupResources(true)
+
       state.resultUrl = URL.createObjectURL(blob)
       const maskBlob = await createMaskBlobFromAlphaPng(blob)
       state.maskUrl = URL.createObjectURL(maskBlob)
       state.editedMaskUrl = null
       state.step = 'mask'
     } catch (e) {
-      state.error =
-        e instanceof Error ? e.message : '서버 고품질 추출 중 오류가 발생했습니다. 로컬 서버가 실행 중인지 확인하세요 (cd backend && uvicorn main:app --reload).'
+      state.error = e instanceof Error ? e.message : '오류가 발생했습니다.'
+      showToast(state.error, 'error')
     } finally {
       state.loading = false
-      render()
+      refreshUI()
     }
   }
 
-  render()
+  initLayout()
 }
-
