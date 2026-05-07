@@ -383,7 +383,7 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
         maskEditorHintEl.style.display = 'margin:0;font-size:0.9rem;color:#a0a0b8'
       }
     } else if (state.loading) {
-      resultWrapEl.innerHTML = '<div class="spinner"></div><p class="loading-text" id="loadingPercent">처리 중 0%</p>'
+      resultWrapEl.innerHTML = '<div class="spinner"></div><p class="loading-text">AI 분석 및 배경 제거 중...</p>'
       actionsEl.style.display = 'none'
       maskEditorHintEl.style.display = 'none'
       prevResDisplayW = 0
@@ -414,27 +414,22 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
     }
   }
 
+  let offscreenMaskCanvas: HTMLCanvasElement | null = null
+  let offscreenMaskCtx: CanvasRenderingContext2D | null = null
+
   function drawMaskDisplay() {
-    if (!maskCanvas || !maskCtx || !maskImageData || !originalImageForMask) return
+    if (!maskCanvas || !maskCtx || !offscreenMaskCanvas || !originalImageForMask) return
     const w = maskCanvas.width
     const h = maskCanvas.height
+
+    // 1. 원본 그리기
+    maskCtx.clearRect(0, 0, w, h)
     maskCtx.drawImage(originalImageForMask, 0, 0, w, h)
-    const overlay = maskCtx.getImageData(0, 0, w, h)
-    const mask = maskImageData.data
-    for (let i = 0; i < mask.length; i += 4) {
-      const v = mask[i + 3]
-      const a = 0.45
-      if (v > 127) {
-        overlay.data[i] = Math.round(overlay.data[i] * (1 - a) + 0 * a)
-        overlay.data[i + 1] = Math.round(overlay.data[i + 1] * (1 - a) + 255 * a)
-        overlay.data[i + 2] = Math.round(overlay.data[i + 2] * (1 - a) + 0 * a)
-      } else {
-        overlay.data[i] = Math.round(overlay.data[i] * (1 - a) + 255 * a)
-        overlay.data[i + 1] = Math.round(overlay.data[i + 1] * (1 - a) + 0 * a)
-        overlay.data[i + 2] = Math.round(overlay.data[i + 2] * (1 - a) + 0 * a)
-      }
-    }
-    maskCtx.putImageData(overlay, 0, 0)
+
+    // 2. 오프스크린 마스크를 0.45 투명도로 덮기
+    maskCtx.globalAlpha = 0.45
+    maskCtx.drawImage(offscreenMaskCanvas, 0, 0)
+    maskCtx.globalAlpha = 1.0
   }
 
   function setupMaskCanvas() {
@@ -500,23 +495,39 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
             canvasEl = document.getElementById('maskCanvas') as HTMLCanvasElement
             canvasEl.width = w
             canvasEl.height = h
-            const ctx = canvasEl.getContext('2d')
+            const ctx = canvasEl.getContext('2d', { willReadFrequently: true })
             if (!ctx) return
             maskCanvas = canvasEl
             maskCtx = ctx
             originalImageForMask = origImg
 
-            const maskCan = document.createElement('canvas')
-            maskCan.width = w
-            maskCan.height = h
-            const mCtx = maskCan.getContext('2d')!
-            mCtx.drawImage(maskImg, 0, 0, w, h)
-            maskImageData = mCtx.getImageData(0, 0, w, h)
-            const d = maskImageData.data
-            for (let i = 0; i < d.length; i += 4) {
-              const v = d[i]
-              d[i] = d[i + 1] = d[i + 2] = d[i + 3] = v
+            // 오프스크린 캔버스 초기화
+            offscreenMaskCanvas = document.createElement('canvas')
+            offscreenMaskCanvas.width = w
+            offscreenMaskCanvas.height = h
+            offscreenMaskCtx = offscreenMaskCanvas.getContext('2d', { willReadFrequently: true })!
+
+            // 초기 마스크 데이터 로드 및 시각화
+            const tempCan = document.createElement('canvas')
+            tempCan.width = w
+            tempCan.height = h
+            const tCtx = tempCan.getContext('2d')!
+            tCtx.drawImage(maskImg, 0, 0, w, h)
+            const id = tCtx.getImageData(0, 0, w, h)
+
+            // 오프스크린에 시각적 마스크(녹색/적색) 그리기
+            offscreenMaskCtx.clearRect(0, 0, w, h)
+            const visId = offscreenMaskCtx.createImageData(w, h)
+            for (let i = 0; i < id.data.length; i += 4) {
+              const v = id.data[i] // R채널(마스크값) 사용
+              if (v > 127) {
+                visId.data[i] = 0; visId.data[i+1] = 255; visId.data[i+2] = 0; visId.data[i+3] = 255 // 녹색
+              } else {
+                visId.data[i] = 255; visId.data[i+1] = 0; visId.data[i+2] = 0; visId.data[i+3] = 255 // 적색
+              }
             }
+            offscreenMaskCtx.putImageData(visId, 0, 0)
+
             drawMaskDisplay()
 
             canvasEl.style.width = '100%'
@@ -534,22 +545,36 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
           // 축소 시 단순 조절
           canvasEl.width = w
           canvasEl.height = h
-          const ctx = canvasEl.getContext('2d')
+          const ctx = canvasEl.getContext('2d', { willReadFrequently: true })
           if (ctx) {
             maskCanvas = canvasEl
             maskCtx = ctx
             originalImageForMask = origImg
-            const mCan = document.createElement('canvas')
-            mCan.width = w
-            mCan.height = h
-            const mCtx = mCan.getContext('2d')!
-            mCtx.drawImage(maskImg, 0, 0, w, h)
-            maskImageData = mCtx.getImageData(0, 0, w, h)
-            const d = maskImageData.data
-            for (let i = 0; i < d.length; i += 4) {
-              const v = d[i]
-              d[i] = d[i + 1] = d[i + 2] = d[i + 3] = v
+
+            offscreenMaskCanvas = document.createElement('canvas')
+            offscreenMaskCanvas.width = w
+            offscreenMaskCanvas.height = h
+            offscreenMaskCtx = offscreenMaskCanvas.getContext('2d', { willReadFrequently: true })!
+
+            const tempCan = document.createElement('canvas')
+            tempCan.width = w
+            tempCan.height = h
+            const tCtx = tempCan.getContext('2d')!
+            tCtx.drawImage(maskImg, 0, 0, w, h)
+            const id = tCtx.getImageData(0, 0, w, h)
+
+            offscreenMaskCtx.clearRect(0, 0, w, h)
+            const visId = offscreenMaskCtx.createImageData(w, h)
+            for (let i = 0; i < id.data.length; i += 4) {
+              const v = id.data[i]
+              if (v > 127) {
+                visId.data[i] = 0; visId.data[i+1] = 255; visId.data[i+2] = 0; visId.data[i+3] = 255
+              } else {
+                visId.data[i] = 255; visId.data[i+1] = 0; visId.data[i+2] = 0; visId.data[i+3] = 255
+              }
             }
+            offscreenMaskCtx.putImageData(visId, 0, 0)
+
             drawMaskDisplay()
           }
 
@@ -591,30 +616,17 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
   }
 
   function drawBrush(x: number, y: number) {
-    if (!maskImageData || !maskCanvas) return
+    if (!offscreenMaskCtx || !maskCanvas) return
     const size = Math.max(1, state.brushSize)
-    const targetValue = state.brushMode === 'include' ? 255 : 0
-    const d = maskImageData.data
-    const w = maskCanvas.width
-    const h = maskCanvas.height
-    const r = Math.max(0.5, size / 2)
-    const r2 = r * r
-    for (let dy = -Math.ceil(r); dy <= Math.ceil(r); dy++) {
-      for (let dx = -Math.ceil(r); dx <= Math.ceil(r); dx++) {
-        const dist2 = dx * dx + dy * dy
-        if (dist2 > r2) continue
-        const dist = Math.sqrt(dist2)
-        const t = dist / r
-        const falloff = 1 - t * t * (3 - 2 * t)
-        const px = Math.round(x) + dx
-        const py = Math.round(y) + dy
-        if (px < 0 || px >= w || py < 0 || py >= h) continue
-        const i = (py * w + px) * 4
-        const current = d[i + 3]
-        const blended = Math.round(current * (1 - falloff) + targetValue * falloff)
-        d[i] = d[i + 1] = d[i + 2] = d[i + 3] = blended
-      }
-    }
+    const color = state.brushMode === 'include' ? 'rgb(0, 255, 0)' : 'rgb(255, 0, 0)'
+
+    offscreenMaskCtx.save()
+    offscreenMaskCtx.beginPath()
+    offscreenMaskCtx.arc(x, y, size / 2, 0, Math.PI * 2)
+    offscreenMaskCtx.fillStyle = color
+    offscreenMaskCtx.fill()
+    offscreenMaskCtx.restore()
+
     drawMaskDisplay()
   }
 
@@ -664,7 +676,7 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
   }
 
   function resetMaskCanvas() {
-    if (!maskCanvas || !maskCtx || !maskImageData || !state.maskUrl) return
+    if (!maskCanvas || !maskCtx || !offscreenMaskCtx || !state.maskUrl) return
     state.editedMaskUrl = null
     const img = new Image()
     img.crossOrigin = 'anonymous'
@@ -679,13 +691,22 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
       const tmp = document.createElement('canvas')
       tmp.width = w
       tmp.height = h
-      tmp.getContext('2d')!.drawImage(img, 0, 0, w, h)
-      const id = tmp.getContext('2d')!.getImageData(0, 0, w, h)
-      const d = maskImageData!.data
-      for (let i = 0; i < d.length; i += 4) {
+      const tCtx = tmp.getContext('2d')!
+      tCtx.drawImage(img, 0, 0, w, h)
+      const id = tCtx.getImageData(0, 0, w, h)
+
+      // 오프스크린에 다시 녹색/적색으로 덮어씌우기
+      offscreenMaskCtx!.clearRect(0, 0, w, h)
+      const visId = offscreenMaskCtx!.createImageData(w, h)
+      for (let i = 0; i < id.data.length; i += 4) {
         const v = id.data[i]
-        d[i] = d[i + 1] = d[i + 2] = d[i + 3] = v
+        if (v > 127) {
+          visId.data[i] = 0; visId.data[i+1] = 255; visId.data[i+2] = 0; visId.data[i+3] = 255
+        } else {
+          visId.data[i] = 255; visId.data[i+1] = 0; visId.data[i+2] = 0; visId.data[i+3] = 255
+        }
       }
+      offscreenMaskCtx!.putImageData(visId, 0, 0)
       drawMaskDisplay()
     }
     img.src = state.maskUrl
@@ -693,7 +714,7 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
 
   function applyMask() {
     if (!state.file) return
-    if (!maskImageData || !maskCanvas || !originalImageForMask) {
+    if (!offscreenMaskCtx || !maskCanvas || !originalImageForMask) {
       state.error = '마스크를 먼저 추출해 주세요.'
       showToast(state.error, 'error')
       refreshUI()
@@ -718,11 +739,15 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
       outCtx.drawImage(originalImageForMask, 0, 0, w, h)
       const outData = outCtx.getImageData(0, 0, w, h)
       const outPixels = outData.data
-      const maskPixels = maskImageData.data
+
+      // 오프스크린 마스크에서 픽셀 읽어와서 알파 채널 생성
+      const maskId = offscreenMaskCtx!.getImageData(0, 0, w, h)
+      const maskPixels = maskId.data
 
       for (let i = 0; i < outPixels.length; i += 4) {
-        const a = maskPixels[i + 3]
-        outPixels[i + 3] = a
+        // 녹색(포함)이면 255, 아니면 0 (간단한 비교)
+        const isInclude = maskPixels[i + 1] > 127
+        outPixels[i + 3] = isInclude ? 255 : 0
       }
       outCtx.putImageData(outData, 0, 0)
 
@@ -735,13 +760,6 @@ export function mountAlphaPage(root: HTMLElement, navigate: (href: string) => vo
         }
         if (state.resultUrl) revokeUrl(state.resultUrl) // 이전 결과 URL 먼저 지움
         state.resultUrl = URL.createObjectURL(blob)
-        // 새로 결과 나왔으니 여기서 캔버스관련 메모리 안쓰면 정리해줌 (UI는 유지)
-        if (maskCanvas) {
-          maskCanvas.width = 0
-          maskCanvas.height = 0
-        }
-        maskImageData = null
-        originalImageForMask = null
 
         state.step = 'result'
         state.loading = false
